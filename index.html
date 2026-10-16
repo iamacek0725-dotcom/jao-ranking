@@ -194,6 +194,8 @@ button{font:inherit;color:inherit}
 .tabs button[aria-selected="true"] .ic{background:var(--face);border-color:var(--line);color:var(--red);box-shadow:0 3px 0 -1.5px var(--red),0 3px 0 0 var(--line)}
 
 .empty{padding:28px 8px;text-align:center;color:var(--ink-2)}
+.privnote{background:var(--ok-soft);color:var(--ink);border:1.5px solid var(--ok);border-radius:12px;padding:12px 14px;font-size:.95rem;line-height:1.6}
+.privnote b{display:block;color:var(--ok);font-family:var(--f-disp);font-size:1.05rem;margin-bottom:2px}
 /* loading */
 .wait{padding:34px 18px 30px;text-align:center}
 .wait .tiles{display:flex;justify-content:center;gap:10px;margin-bottom:22px}
@@ -257,6 +259,9 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbylpC2D0GUTBvDacJXvBoaF
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+// 本人専用リンク（?k=合言葉）。一度開けばこの端末が覚える
+let KEY='';
+try{const q=new URLSearchParams(location.search).get('k'); if(q){KEY=q.trim(); store.set('jao.key',KEY)} else {KEY=store.get('jao.key')||''}}catch(e){}
 let D=null, tab=(location.hash||'').replace('#','')||'me', me=store.get('jao.me')||'', cat='rate', logAll=false, listAll=false;
 let MIN_TOTAL=50, MIN_MONTH=10, MONTHS=['1か月目','2か月目','3か月目'];
 // 最終対局日の月が、期の何か月目か（0〜2）
@@ -282,6 +287,8 @@ const CATS={
 };
 
 function active(){return D.players.filter(p=>p.g>0&&p.rate!=null)}
+function isMine(p){return !!(D&&D.mine&&p&&p.name===D.mine.name)}
+function canOpen(p){return !!p&&p.rate!=null&&(!p.private||isMine(p))}
 function player(n){return D.players.find(p=>p.name===n)}
 
 function setTab(t){
@@ -292,7 +299,7 @@ function setTab(t){
 document.querySelectorAll('.tabs button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 
 function picker(){
-  const ps=active().slice().sort((a,b)=>a.name.localeCompare(b.name,'ja'));
+  const ps=active().filter(canOpen).sort((a,b)=>a.name.localeCompare(b.name,'ja'));
   return `<div class="picker"><label for="who">氏名</label><div class="sel"><select id="who">
     <option value="">選んでください</option>
     ${ps.map(p=>`<option value="${esc(p.name)}" ${p.name===me?'selected':''}>${esc(p.name)}</option>`).join('')}
@@ -335,7 +342,7 @@ function deltaHtml(cur,prev,better,f){
 function viewMe(){
   let h=picker();
   const p=player(me);
-  if(!p||p.rate==null){
+  if(!canOpen(p)){
     return h+`<div class="tile empty">上のリストから自分の名前を選ぶと、今期の成績が表示されます。<br>選んだ名前はこの端末に記憶されます。</div>`;
   }
   const pv=p.prev||{};
@@ -351,6 +358,7 @@ function viewMe(){
   const cols=['var(--red)','var(--ink-2)','var(--ink-3)','var(--rule)'];
 
   h+=`<div class="stack view">
+  ${isMine(p)?`<div class="privnote"><b>🔒 あなた専用の表示です</b>この成績は、あなたの専用リンクで開いたときだけ見られます。リンクは他の人に送らないでください。</div>`:''}
   <section class="tile" aria-label="レーティング">
     <div class="hero">
       <div><div class="lbl">レーティング</div><div class="big">${fmt.rate(p.rate)}</div></div>
@@ -458,7 +466,7 @@ function viewRule(){
     得失点は35,000点を基準に1,000点＝0.1R。<br>例）40,500点で1着 → +30（1着）＋0.55（浮き5,500点）＝ +30.55</dd></div>
   <div><dt>同点・同着</dt><dd>1着2着が同点なら1.5着、2着3着は2.5着、3着4着は3.5着。レーティングの順位点は折半します。</dd></div>
   <div><dt>同順位</dt><dd>各部門で同じ値のときは、レーティングが高い方が上位です。</dd></div>
-  <div><dt>名前の表示</dt><dd>このアプリにはニックネームだけを表示しています。本人のみ開示の方は一覧に表示されません。</dd></div>
+  <div><dt>名前の表示</dt><dd>このアプリにはニックネームだけを表示しています。「本人のみ開示」の方はランキングには載りますが、詳しい成績はご本人の専用リンクでだけ見られます。</dd></div>
   </dl></section>`;
 }
 
@@ -475,6 +483,11 @@ function render(){
 const CACHE_KEY='jao.data';
 let slowTimer=null;
 function applyData(d){
+  if(d.mine){
+    const i=d.players.findIndex(p=>p.name===d.mine.name);
+    if(i>=0) d.players[i]=d.mine; else d.players.push(d.mine);
+    if(!me||!d.players.some(p=>p.name===me&&(!p.private||p.name===d.mine.name))){me=d.mine.name;store.set('jao.me',me)}
+  }
   D=d;
   MIN_MONTH=d.minMonth||MIN_MONTH;
   if(d.monthLabels&&d.monthLabels.length===3) MONTHS=d.monthLabels;
@@ -510,11 +523,16 @@ function load(){
   const btn=$('#reload'); btn.setAttribute('aria-busy','true');
   if(D){ $('#banner').hidden=false; $('#banner').querySelector('.dot').hidden=false; $('#bannerText').textContent='最新の成績を確認しています…'; }
   clearTimeout(slowTimer); slowTimer=setTimeout(showWaitSlow,8000);
-  const url=API_URL?API_URL+(API_URL.includes('?')?'&':'?')+'t='+Date.now():'data.json';
+  const url=API_URL?API_URL+(API_URL.includes('?')?'&':'?')+'t='+Date.now()+(KEY?'&k='+encodeURIComponent(KEY):''):'data.json';
   fetch(url,{cache:'no-store'}).then(r=>{if(!r.ok) throw new Error(r.status);return r.json()}).then(d=>{
     if(d.error) throw new Error(d.error);
     applyData(d);
     $('#banner').hidden=true;
+    if(d.keyError){
+      KEY=''; try{localStorage.removeItem('jao.key')}catch(e){}
+      $('#banner').hidden=false; $('#banner').querySelector('.dot').hidden=true;
+      $('#bannerText').textContent='この専用リンクは使えなくなりました。新しいリンクはお店にお問い合わせください。';
+    }
     try{localStorage.setItem(CACHE_KEY,JSON.stringify(d))}catch(e){}
   }).catch(()=>showError())
   .finally(()=>{clearTimeout(slowTimer);btn.setAttribute('aria-busy','false')});
